@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>내 위치 기반 스타벅스 매장 찾기 (위도/경도 입력)</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #result { margin-top: 20px; }
+    button { padding: 10px 20px; font-size: 16px; }
+    input { padding: 5px; font-size: 16px; margin-right: 10px; }
+
+    li {
+        border: 1px solid black;
+        width: fit-content;
+        padding: 5px;
+    }
+    li div {
+        border: 1px solid pink;
+        margin: 4px;
+    }
+  </style>
+  <!-- Turf.js 라이브러리 (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+</head>
+<body>
+  <h1>내 위치 기반 스타벅스 매장 찾기</h1>
+  <p>
+    아래 입력란에 위도와 경도를 직접 입력하세요. (좌표 순서: 위도, 경도)
+    <div>
+        <a href="https://jusoga.com/">위도 경도 찾기 사이트</a>
+        <ul>
+            <li>
+                <span>남산스퀘어(우리 장소)</span>
+                <div class="">위도	37.56165121272</div>
+                <div class="">경도	126.99110648606</div>
+                
+            </li>
+            <li>
+                <span>성균관대학교(명륜)</span>
+                <div class="">위도 37.584907418709</div>
+                <div class="">경도 126.99694886506</div>
+            </li>
+            <li>
+                <span>단국대학교(죽전)</span>
+                <div class="">위도 37.323468556539</div>
+                <div class="">경도 127.12558057358</div>
+            </li>
+            <li>
+                <span>부산광역시 해운대구 해운대로 913 (좌동)</span>
+                <div class="">위도 35.176747504632</div>
+                <div class="">경도 129.18405788222</div>
+            </li>
+        </ul>
+    </div>
+  </p>
+  <div>
+    <input type="text" id="latitude" placeholder="위도 입력 (예: 37.5665)">
+    <input type="text" id="longitude" placeholder="경도 입력 (예: 126.9780)">
+    <button id="findBtn">가장 가까운 스타벅스 찾기</button>
+  </div>
+  <div id="result"></div>
+  
+  <script>
+    let mappingData = {};
+    let districtPolygons = [];
+    
+    // 1. mapping.json과 krDistricts.json 파일 불러오기
+    async function loadMappingData() {
+      try {
+        const response = await fetch('mapping.json');
+        mappingData = await response.json();
+      } catch (error) {
+        console.error("mapping.json 로드 에러:", error);
+      }
+    }
+    
+    async function loadDistrictPolygons() {
+      try {
+        const response = await fetch('krDistricts.json');
+        const data = await response.json();
+        districtPolygons = data.districtPolygons;
+      } catch (error) {
+        console.error("krDistricts.json 로드 에러:", error);
+      }
+    }
+    
+    // 2. 입력된 위도와 경도 가져오기
+    function getInputLocation() {
+      const latInput = document.getElementById("latitude").value.trim();
+      const lngInput = document.getElementById("longitude").value.trim();
+      const lat = parseFloat(latInput);
+      const lng = parseFloat(lngInput);
+      
+      if (isNaN(lat) || isNaN(lng)) {
+        throw new Error("유효한 위도와 경도를 입력하세요.");
+      }
+      return { lat, lng };
+    }
+    
+    // 3. 현재 위치가 어느 행정구역(시도 + 구·군)에 속하는지 판별 (Turf.js 사용; 좌표 순서는 [lng, lat])
+    function determineDistrict(lat, lng) {
+      const point = turf.point([lng, lat]);
+      for (let district of districtPolygons) {
+        if (turf.booleanPointInPolygon(point, district.polygon)) {
+          return district;
+        }
+      }
+      return null;
+    }
+    
+    // 4. Haversine 공식으로 두 좌표 간 거리 계산 (단위: km)
+    function computeDistance(lat1, lon1, lat2, lon2) {
+      const toRad = x => x * Math.PI / 180;
+      const R = 6371;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+    
+    // 5. 스타벅스 매장 정보를 API로 가져오는 함수 (POST 방식)
+    async function fetchStarbucksStores(lat, lng, sido_cd, gugun_cd) {
+      const formData = new URLSearchParams();
+      formData.append('ins_lat', lat);
+      formData.append('ins_lng', lng);
+      formData.append('p_sido_cd', sido_cd);
+      formData.append('p_gugun_cd', gugun_cd);
+      formData.append('in_biz_cd', '');
+      formData.append('iend', '2000');
+      formData.append('set_date', '');
+      
+      try {
+        const response = await fetch("https://www.starbucks.co.kr/store/getStore.do", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: formData.toString()
+        });
+        const data = await response.json();
+        return data.list;
+      } catch (error) {
+        console.error("스타벅스 매장 데이터 요청 에러:", error);
+        throw error;
+      }
+    }
+    
+    // 6. 매장 목록 중 현재 위치와 가장 가까운 매장을 찾는 함수
+    function findNearestStore(stores, currentLat, currentLng) {
+      let nearestStore = null;
+      let minDistance = Infinity;
+      stores.forEach(store => {
+        const storeLat = parseFloat(store.lat);
+        // 매장의 경도는 lng 또는 lot 필드를 사용
+        const storeLng = store.lng ? parseFloat(store.lng) : parseFloat(store.lot);
+        if (isNaN(storeLat) || isNaN(storeLng)) return;
+        const distance = computeDistance(currentLat, currentLng, storeLat, storeLng);
+        if (distance < minDistance) {
+          minDistance = distance;
+          nearestStore = { ...store, distance };
+        }
+      });
+      return nearestStore;
+    }
+    
+    // 7. 메인 함수: 데이터 로드, 입력 좌표 판별, 그리고 스타벅스 매장 조회
+    async function main() {
+      const resultDiv = document.getElementById("result");
+      resultDiv.innerHTML = "데이터 및 위치 정보를 불러오는 중입니다...";
+      
+      try {
+        // (1) 필요한 JSON 데이터 로드
+        await loadMappingData();
+        await loadDistrictPolygons();
+        
+        // (2) 사용자가 입력한 위도/경도 가져오기
+        const { lat: currentLat, lng: currentLng } = getInputLocation();
+        
+        // (3) 현재 위치가 어느 행정구역에 속하는지 판별
+        const district = determineDistrict(currentLat, currentLng);
+        let sido_cd, gugun_cd, districtMessage;
+        if (district) {
+          sido_cd = mappingData.sidoMapping[district.sido];
+          gugun_cd = district.code;
+          districtMessage = `입력한 좌표는 ${district.sido} ${district.name}에 속합니다.`;
+        } else {
+          // 판별 실패 시 기본값 (예: 서울 중구)
+          sido_cd = mappingData.sidoMapping["서울"];
+          gugun_cd = "0119";
+          districtMessage = "입력한 좌표가 어느 행정구역에도 속하지 않아 기본값(서울 중구)을 사용합니다.";
+        }
+        
+        resultDiv.innerHTML = `입력 좌표: ${currentLat.toFixed(5)}, ${currentLng.toFixed(5)}<br>
+                               ${districtMessage}<br>
+                               (사용 코드: ${sido_cd} / ${gugun_cd})<br>
+                               스타벅스 매장 정보를 가져오는 중입니다...`;
+        
+        // (4) 스타벅스 매장 정보 가져오기
+        const stores = await fetchStarbucksStores(currentLat, currentLng, sido_cd, gugun_cd);
+        if (!stores || stores.length === 0) {
+          resultDiv.innerHTML += "<br>매장 정보를 불러오지 못했습니다.";
+          return;
+        }
+        
+        // (5) 가장 가까운 매장 찾기
+        const nearestStore = findNearestStore(stores, currentLat, currentLng);
+        if (nearestStore) {
+          resultDiv.innerHTML += `<br><br><strong>가장 가까운 스타벅스 매장</strong><br>
+                                  매장명: ${nearestStore.s_name}<br>
+                                  주소: ${nearestStore.addr}<br>
+                                  약 ${nearestStore.distance.toFixed(2)} km 떨어져 있습니다.`;
+        } else {
+          resultDiv.innerHTML += "<br>좌표 정보를 찾을 수 없는 매장이 있습니다.";
+        }
+      } catch (error) {
+        resultDiv.innerHTML = "에러 발생: " + error.message;
+      }
+    }
+    
+    document.getElementById("findBtn").addEventListener("click", main);
+  </script>
+</body>
+</html>
